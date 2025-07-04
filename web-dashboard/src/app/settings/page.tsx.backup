@@ -1,0 +1,1129 @@
+'use client';
+
+import React, { useState } from 'react';
+import {
+  Box,
+  Container,
+  Typography,
+  Card,
+  CardContent,
+  Button,
+  Stack,
+  Chip,
+  Alert,
+  Switch,
+  FormControlLabel,
+  TextField,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Divider,
+  List,
+  ListItem,
+  ListItemText,
+  ListItemIcon,
+  ListItemSecondaryAction,
+  Grid,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Tabs,
+  Tab,
+  IconButton,
+  Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Alert as MuiAlert,
+  Snackbar,
+} from '@mui/material';
+import {
+  Settings as SettingsIcon,
+  Security as SecurityIcon,
+  Notifications as NotificationsIcon,
+  Api as ApiIcon,
+  Storage as StorageIcon,
+  Speed as SpeedIcon,
+  Visibility as VisibilityIcon,
+  VisibilityOff as VisibilityOffIcon,
+  Add as AddIcon,
+  Delete as DeleteIcon,
+  Edit as EditIcon,
+  Refresh as RefreshIcon,
+  Save as SaveIcon,
+  ExpandMore as ExpandMoreIcon,
+  CheckCircle as CheckIcon,
+  Warning as WarningIcon,
+  Error as ErrorIcon,
+  Info as InfoIcon,
+  Email as EmailIcon,
+  Sms as SmsIcon,
+  Webhook as WebhookIcon,
+  Key as KeyIcon,
+  Lock as LockIcon,
+  Public as PublicIcon,
+} from '@mui/icons-material';
+import { ThemeProvider } from '@/components/ThemeProvider';
+import { QueryProvider } from '@/components/QueryProvider';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { gatewayApi } from '@/lib/api-client';
+
+// Settings Types
+interface SystemSettings {
+  environment: 'development' | 'staging' | 'production';
+  debugMode: boolean;
+  logLevel: 'debug' | 'info' | 'warn' | 'error';
+  maintenanceMode: boolean;
+  maxConcurrentRequests: number;
+  requestTimeout: number;
+  rateLimitEnabled: boolean;
+  rateLimitRequests: number;
+  rateLimitWindow: number;
+}
+
+interface Provider {
+  name: string;
+  apiKey: string;
+  baseUrl: string;
+  enabled: boolean;
+  timeout: number;
+  maxTokens: number;
+}
+
+interface ApiSettings {
+  defaultProvider: string;
+  providers: Provider[];
+  retryAttempts: number;
+  retryDelay: number;
+  circuitBreakerEnabled: boolean;
+  circuitBreakerThreshold: number;
+}
+
+interface NotificationSettings {
+  email: {
+    enabled: boolean;
+    smtpHost: string;
+    smtpPort: number;
+    smtpUser: string;
+    smtpPassword: string;
+    fromEmail: string;
+    fromName: string;
+  };
+  webhooks: {
+    enabled: boolean;
+    url: string;
+    secret: string;
+    events: string[];
+  };
+  alerts: {
+    policyViolations: boolean;
+    rateLimitExceeded: boolean;
+    systemErrors: boolean;
+    quotaExceeded: boolean;
+    providerErrors: boolean;
+  };
+}
+
+interface SecuritySettings {
+  authentication: {
+    method: 'jwt' | 'oauth2' | 'api_key';
+    jwtSecret: string;
+    jwtExpiry: number;
+    requireMFA: boolean;
+    sessionTimeout: number;
+  };
+  cors: {
+    enabled: boolean;
+    allowedOrigins: string[];
+    allowedMethods: string[];
+    allowedHeaders: string[];
+  };
+  encryption: {
+    enabled: boolean;
+    algorithm: string;
+    keyRotation: boolean;
+    keyRotationDays: number;
+  };
+}
+
+interface CacheSettings {
+  enabled: boolean;
+  type: 'memory' | 'redis';
+  redisUrl: string;
+  ttl: number;
+  maxSize: number;
+  evictionPolicy: 'lru' | 'lfu' | 'fifo';
+}
+
+// Mock data
+const mockSystemSettings: SystemSettings = {
+  environment: 'production',
+  debugMode: false,
+  logLevel: 'info',
+  maintenanceMode: false,
+  maxConcurrentRequests: 1000,
+  requestTimeout: 30000,
+  rateLimitEnabled: true,
+  rateLimitRequests: 100,
+  rateLimitWindow: 60,
+};
+
+const mockApiSettings: ApiSettings = {
+  defaultProvider: 'openai',
+  providers: [
+    {
+      name: 'OpenAI',
+      apiKey: 'sk-...',
+      baseUrl: 'https://api.openai.com/v1',
+      enabled: true,
+      timeout: 30000,
+      maxTokens: 4000,
+    },
+    {
+      name: 'Anthropic',
+      apiKey: 'sk-ant-...',
+      baseUrl: 'https://api.anthropic.com',
+      enabled: true,
+      timeout: 30000,
+      maxTokens: 4000,
+    },
+  ],
+  retryAttempts: 3,
+  retryDelay: 1000,
+  circuitBreakerEnabled: true,
+  circuitBreakerThreshold: 5,
+};
+
+const mockNotificationSettings: NotificationSettings = {
+  email: {
+    enabled: true,
+    smtpHost: 'smtp.gmail.com',
+    smtpPort: 587,
+    smtpUser: 'alerts@example.com',
+    smtpPassword: '********',
+    fromEmail: 'alerts@example.com',
+    fromName: 'AI Gateway Alerts',
+  },
+  webhooks: {
+    enabled: false,
+    url: '',
+    secret: '',
+    events: ['policy_violation', 'rate_limit_exceeded'],
+  },
+  alerts: {
+    policyViolations: true,
+    rateLimitExceeded: true,
+    systemErrors: true,
+    quotaExceeded: true,
+    providerErrors: true,
+  },
+};
+
+const mockSecuritySettings: SecuritySettings = {
+  authentication: {
+    method: 'jwt',
+    jwtSecret: 'your-secret-key',
+    jwtExpiry: 3600,
+    requireMFA: false,
+    sessionTimeout: 1800,
+  },
+  cors: {
+    enabled: true,
+    allowedOrigins: ['https://yourdomain.com'],
+    allowedMethods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  },
+  encryption: {
+    enabled: true,
+    algorithm: 'AES-256',
+    keyRotation: true,
+    keyRotationDays: 90,
+  },
+};
+
+const mockCacheSettings: CacheSettings = {
+  enabled: true,
+  type: 'redis',
+  redisUrl: 'redis://localhost:6379',
+  ttl: 3600,
+  maxSize: 1000,
+  evictionPolicy: 'lru',
+};
+
+// Settings Component
+function Settings() {
+  const [selectedTab, setSelectedTab] = useState(0);
+  const [showApiKeys, setShowApiKeys] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<any>(null);
+  const [isProviderDialogOpen, setIsProviderDialogOpen] = useState(false);
+  const [snackbar, setSnackbar] = useState<{
+    open: boolean;
+    message: string;
+    severity: 'success' | 'error' | 'warning' | 'info';
+  }>({ open: false, message: '', severity: 'info' });
+
+  const queryClient = useQueryClient();
+
+  // Fetch settings
+  const {
+    data: systemSettings = mockSystemSettings,
+    error: systemError,
+    refetch: refetchSystem,
+  } = useQuery({
+    queryKey: ['system-settings'],
+    queryFn: async () => {
+      try {
+        return await gatewayApi.getSystemSettings();
+      } catch {
+        return mockSystemSettings;
+      }
+    },
+    staleTime: 300000,
+  });
+
+  const {
+    data: apiSettings = mockApiSettings,
+    error: apiError,
+    refetch: refetchApi,
+  } = useQuery({
+    queryKey: ['api-settings'],
+    queryFn: async () => {
+      try {
+        return await gatewayApi.getApiSettings();
+      } catch {
+        return mockApiSettings;
+      }
+    },
+    staleTime: 300000,
+  });
+
+  const {
+    data: notificationSettings = mockNotificationSettings,
+    error: notificationError,
+    refetch: refetchNotifications,
+  } = useQuery({
+    queryKey: ['notification-settings'],
+    queryFn: async () => {
+      try {
+        return await gatewayApi.getNotificationSettings();
+      } catch {
+        return mockNotificationSettings;
+      }
+    },
+    staleTime: 300000,
+  });
+
+  const {
+    data: securitySettings = mockSecuritySettings,
+    error: securityError,
+    refetch: refetchSecurity,
+  } = useQuery({
+    queryKey: ['security-settings'],
+    queryFn: async () => {
+      try {
+        return await gatewayApi.getSecuritySettings();
+      } catch {
+        return mockSecuritySettings;
+      }
+    },
+    staleTime: 300000,
+  });
+
+  const {
+    data: cacheSettings = mockCacheSettings,
+    error: cacheError,
+    refetch: refetchCache,
+  } = useQuery({
+    queryKey: ['cache-settings'],
+    queryFn: async () => {
+      try {
+        return await gatewayApi.getCacheSettings();
+      } catch {
+        return mockCacheSettings;
+      }
+    },
+    staleTime: 300000,
+  });
+
+  // Mutations
+  const updateSystemSettingsMutation = useMutation({
+    mutationFn: async (settings: Partial<SystemSettings>) => {
+      return await gatewayApi.updateSystemSettings(settings);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['system-settings'] });
+      showSnackbar('System settings updated successfully', 'success');
+    },
+    onError: () => {
+      showSnackbar('Failed to update system settings', 'error');
+    },
+  });
+
+  const updateApiSettingsMutation = useMutation({
+    mutationFn: async (settings: Partial<ApiSettings>) => {
+      return await gatewayApi.updateApiSettings(settings);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['api-settings'] });
+      showSnackbar('API settings updated successfully', 'success');
+    },
+    onError: () => {
+      showSnackbar('Failed to update API settings', 'error');
+    },
+  });
+
+  const updateNotificationSettingsMutation = useMutation({
+    mutationFn: async (settings: Partial<NotificationSettings>) => {
+      return await gatewayApi.updateNotificationSettings(settings);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['notification-settings'] });
+      showSnackbar('Notification settings updated successfully', 'success');
+    },
+    onError: () => {
+      showSnackbar('Failed to update notification settings', 'error');
+    },
+  });
+
+  const updateSecuritySettingsMutation = useMutation({
+    mutationFn: async (settings: Partial<SecuritySettings>) => {
+      return await gatewayApi.updateSecuritySettings(settings);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['security-settings'] });
+      showSnackbar('Security settings updated successfully', 'success');
+    },
+    onError: () => {
+      showSnackbar('Failed to update security settings', 'error');
+    },
+  });
+
+  const updateCacheSettingsMutation = useMutation({
+    mutationFn: async (settings: Partial<CacheSettings>) => {
+      return await gatewayApi.updateCacheSettings(settings);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cache-settings'] });
+      showSnackbar('Cache settings updated successfully', 'success');
+    },
+    onError: () => {
+      showSnackbar('Failed to update cache settings', 'error');
+    },
+  });
+
+  // Handlers
+  const handleSaveSystemSettings = () => {
+    updateSystemSettingsMutation.mutate(systemSettings);
+  };
+
+  const handleSaveApiSettings = () => {
+    updateApiSettingsMutation.mutate(apiSettings);
+  };
+
+  const handleSaveNotificationSettings = () => {
+    updateNotificationSettingsMutation.mutate(notificationSettings);
+  };
+
+  const handleSaveSecuritySettings = () => {
+    updateSecuritySettingsMutation.mutate(securitySettings);
+  };
+
+  const handleSaveCacheSettings = () => {
+    updateCacheSettingsMutation.mutate(cacheSettings);
+  };
+
+  const handleAddProvider = () => {
+    setEditingProvider({});
+    setIsProviderDialogOpen(true);
+  };
+
+  const handleEditProvider = (provider: any) => {
+    setEditingProvider(provider);
+    setIsProviderDialogOpen(true);
+  };
+
+  const handleDeleteProvider = (providerName: string) => {
+    if (confirm(`Are you sure you want to delete the ${providerName} provider?`)) {
+      const updatedProviders = apiSettings.providers.filter((p: any) => p.name !== providerName);
+      updateApiSettingsMutation.mutate({ providers: updatedProviders });
+    }
+  };
+
+  const handleRefresh = () => {
+    refetchSystem();
+    refetchApi();
+    refetchNotifications();
+    refetchSecurity();
+    refetchCache();
+  };
+
+  const showSnackbar = (message: string, severity: 'success' | 'error' | 'warning' | 'info') => {
+    setSnackbar({ open: true, message, severity });
+  };
+
+  const handleCloseSnackbar = () => {
+    setSnackbar({ ...snackbar, open: false });
+  };
+
+  const getEnvironmentColor = (env: string) => {
+    switch (env) {
+      case 'production': return 'error';
+      case 'staging': return 'warning';
+      case 'development': return 'success';
+      default: return 'default';
+    }
+  };
+
+  const getProviderStatus = (provider: any) => {
+    return provider.enabled ? 'active' : 'inactive';
+  };
+
+  const getProviderStatusColor = (provider: any) => {
+    return provider.enabled ? 'success' : 'default';
+  };
+
+  if (systemError || apiError || notificationError || securityError || cacheError) {
+    return (
+      <Container maxWidth="lg" sx={{ py: 4 }}>
+        <Alert severity="error">
+          Failed to load settings. Please try again.
+        </Alert>
+      </Container>
+    );
+  }
+
+  return (
+    <Box sx={{ flexGrow: 1, bgcolor: 'background.default', minHeight: '100vh' }}>
+      <Container maxWidth="xl" sx={{ py: 4 }}>
+        {/* Header */}
+        <Box sx={{ mb: 4 }}>
+          <Stack direction="row" alignItems="center" spacing={2} mb={2}>
+            <SettingsIcon color="primary" sx={{ fontSize: 32 }} />
+            <Typography variant="h4" component="h1" fontWeight="bold">
+              Settings & Configuration
+            </Typography>
+            <Chip
+              label={systemSettings.environment}
+              color={getEnvironmentColor(systemSettings.environment) as any}
+              variant="outlined"
+            />
+            {systemSettings.maintenanceMode && (
+              <Chip label="Maintenance Mode" color="warning" variant="outlined" />
+            )}
+          </Stack>
+          <Typography variant="body1" color="text.secondary">
+            Configure system settings, API providers, notifications, and security options
+          </Typography>
+        </Box>
+
+        {/* Tabs */}
+        <Card sx={{ mb: 4 }}>
+          <Tabs value={selectedTab} onChange={(_, newValue) => setSelectedTab(newValue)}>
+            <Tab label="System" />
+            <Tab label="API Providers" />
+            <Tab label="Notifications" />
+            <Tab label="Security" />
+            <Tab label="Cache" />
+          </Tabs>
+        </Card>
+
+        {/* Tab Content */}
+        {selectedTab === 0 && (
+          <Card>
+            <CardContent>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" mb={3}>
+                <Typography variant="h6">System Configuration</Typography>
+                <Button
+                  variant="contained"
+                  startIcon={<SaveIcon />}
+                  onClick={handleSaveSystemSettings}
+                >
+                  Save Settings
+                </Button>
+              </Stack>
+              <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 3 }}>
+                <Box sx={{ flex: 1 }}>
+                  <FormControl fullWidth sx={{ mb: 2 }}>
+                    <InputLabel>Environment</InputLabel>
+                    <Select
+                      value={systemSettings.environment}
+                      onChange={(e) => updateSystemSettingsMutation.mutate({ environment: e.target.value as any })}
+                      label="Environment"
+                    >
+                      <MenuItem value="development">Development</MenuItem>
+                      <MenuItem value="staging">Staging</MenuItem>
+                      <MenuItem value="production">Production</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={systemSettings.debugMode}
+                        onChange={(e) => updateSystemSettingsMutation.mutate({ debugMode: e.target.checked })}
+                      />
+                    }
+                    label="Debug Mode"
+                  />
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={systemSettings.maintenanceMode}
+                        onChange={(e) => updateSystemSettingsMutation.mutate({ maintenanceMode: e.target.checked })}
+                      />
+                    }
+                    label="Maintenance Mode"
+                  />
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={systemSettings.rateLimitEnabled}
+                        onChange={(e) => updateSystemSettingsMutation.mutate({ rateLimitEnabled: e.target.checked })}
+                      />
+                    }
+                    label="Rate Limiting"
+                  />
+                </Box>
+                <Box sx={{ flex: 1 }}>
+                  <TextField
+                    fullWidth
+                    label="Max Concurrent Requests"
+                    type="number"
+                    value={systemSettings.maxConcurrentRequests}
+                    onChange={(e) => updateSystemSettingsMutation.mutate({ maxConcurrentRequests: parseInt(e.target.value) })}
+                    sx={{ mb: 2 }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="Request Timeout (ms)"
+                    type="number"
+                    value={systemSettings.requestTimeout}
+                    onChange={(e) => updateSystemSettingsMutation.mutate({ requestTimeout: parseInt(e.target.value) })}
+                    sx={{ mb: 2 }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="Rate Limit Requests"
+                    type="number"
+                    value={systemSettings.rateLimitRequests}
+                    onChange={(e) => updateSystemSettingsMutation.mutate({ rateLimitRequests: parseInt(e.target.value) })}
+                    sx={{ mb: 2 }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="Rate Limit Window (seconds)"
+                    type="number"
+                    value={systemSettings.rateLimitWindow}
+                    onChange={(e) => updateSystemSettingsMutation.mutate({ rateLimitWindow: parseInt(e.target.value) })}
+                  />
+                </Box>
+              </Box>
+            </CardContent>
+          </Card>
+        )}
+
+        {selectedTab === 1 && (
+          <Card>
+            <CardContent>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" mb={3}>
+                <Typography variant="h6">API Providers</Typography>
+                <Stack direction="row" spacing={1}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<RefreshIcon />}
+                    onClick={handleRefresh}
+                  >
+                    Refresh
+                  </Button>
+                  <Button
+                    variant="contained"
+                    startIcon={<AddIcon />}
+                    onClick={handleAddProvider}
+                  >
+                    Add Provider
+                  </Button>
+                </Stack>
+              </Stack>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+                {apiSettings.providers.map((provider) => (
+                  <Box sx={{ flex: { xs: '1 1 100%', md: '1 1 calc(50% - 8px)', lg: '1 1 calc(33.333% - 8px)' } }} key={provider.name}>
+                    <Card variant="outlined">
+                      <CardContent>
+                        <Stack direction="row" alignItems="center" spacing={1} mb={1}>
+                          <ApiIcon color="primary" />
+                          <Typography variant="h6">{provider.name}</Typography>
+                          <Chip
+                            label={getProviderStatus(provider)}
+                            size="small"
+                            color={getProviderStatusColor(provider) as any}
+                            variant="outlined"
+                          />
+                        </Stack>
+                        <Typography variant="body2" color="text.secondary" mb={2}>
+                          {provider.baseUrl}
+                        </Typography>
+                        <Stack direction="row" spacing={1}>
+                          <Tooltip title="Edit Provider">
+                            <IconButton
+                              size="small"
+                              onClick={() => handleEditProvider(provider)}
+                            >
+                              <EditIcon />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Toggle API Key Visibility">
+                            <IconButton
+                              size="small"
+                              onClick={() => setShowApiKeys(!showApiKeys)}
+                            >
+                              {showApiKeys ? <VisibilityOffIcon /> : <VisibilityIcon />}
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Delete Provider">
+                            <IconButton
+                              size="small"
+                              color="error"
+                              onClick={() => handleDeleteProvider(provider.name)}
+                            >
+                              <DeleteIcon />
+                            </IconButton>
+                          </Tooltip>
+                        </Stack>
+                        {showApiKeys && (
+                          <Typography variant="caption" color="text.secondary">
+                            API Key: {provider.apiKey}
+                          </Typography>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                ))}
+              </Grid>
+            </CardContent>
+          </Card>
+        )}
+
+        {selectedTab === 2 && (
+          <Card>
+            <CardContent>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" mb={3}>
+                <Typography variant="h6">Notification Settings</Typography>
+                <Button
+                  variant="contained"
+                  startIcon={<SaveIcon />}
+                  onClick={handleSaveNotificationSettings}
+                >
+                  Save Settings
+                </Button>
+              </Stack>
+              <Grid container spacing={3}>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="h6" gutterBottom>
+                    Email Notifications
+                  </Typography>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={notificationSettings.email.enabled}
+                        onChange={(e) => updateNotificationSettingsMutation.mutate({
+                          email: { ...notificationSettings.email, enabled: e.target.checked }
+                        })}
+                      />
+                    }
+                    label="Enable Email Notifications"
+                  />
+                  <TextField
+                    fullWidth
+                    label="SMTP Host"
+                    value={notificationSettings.email.smtpHost}
+                    onChange={(e) => updateNotificationSettingsMutation.mutate({
+                      email: { ...notificationSettings.email, smtpHost: e.target.value }
+                    })}
+                    sx={{ mb: 2, mt: 2 }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="SMTP Port"
+                    type="number"
+                    value={notificationSettings.email.smtpPort}
+                    onChange={(e) => updateNotificationSettingsMutation.mutate({
+                      email: { ...notificationSettings.email, smtpPort: parseInt(e.target.value) }
+                    })}
+                    sx={{ mb: 2 }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="From Email"
+                    value={notificationSettings.email.fromEmail}
+                    onChange={(e) => updateNotificationSettingsMutation.mutate({
+                      email: { ...notificationSettings.email, fromEmail: e.target.value }
+                    })}
+                    sx={{ mb: 2 }}
+                  />
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="h6" gutterBottom>
+                    Alert Types
+                  </Typography>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={notificationSettings.alerts.policyViolations}
+                        onChange={(e) => updateNotificationSettingsMutation.mutate({
+                          alerts: { ...notificationSettings.alerts, policyViolations: e.target.checked }
+                        })}
+                      />
+                    }
+                    label="Policy Violations"
+                  />
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={notificationSettings.alerts.rateLimitExceeded}
+                        onChange={(e) => updateNotificationSettingsMutation.mutate({
+                          alerts: { ...notificationSettings.alerts, rateLimitExceeded: e.target.checked }
+                        })}
+                      />
+                    }
+                    label="Rate Limit Exceeded"
+                  />
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={notificationSettings.alerts.systemErrors}
+                        onChange={(e) => updateNotificationSettingsMutation.mutate({
+                          alerts: { ...notificationSettings.alerts, systemErrors: e.target.checked }
+                        })}
+                      />
+                    }
+                    label="System Errors"
+                  />
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={notificationSettings.alerts.quotaExceeded}
+                        onChange={(e) => updateNotificationSettingsMutation.mutate({
+                          alerts: { ...notificationSettings.alerts, quotaExceeded: e.target.checked }
+                        })}
+                      />
+                    }
+                    label="Quota Exceeded"
+                  />
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={notificationSettings.alerts.providerErrors}
+                        onChange={(e) => updateNotificationSettingsMutation.mutate({
+                          alerts: { ...notificationSettings.alerts, providerErrors: e.target.checked }
+                        })}
+                      />
+                    }
+                    label="Provider Errors"
+                  />
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+        )}
+
+        {selectedTab === 3 && (
+          <Card>
+            <CardContent>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" mb={3}>
+                <Typography variant="h6">Security Settings</Typography>
+                <Button
+                  variant="contained"
+                  startIcon={<SaveIcon />}
+                  onClick={handleSaveSecuritySettings}
+                >
+                  Save Settings
+                </Button>
+              </Stack>
+              <Grid container spacing={3}>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="h6" gutterBottom>
+                    Authentication
+                  </Typography>
+                  <FormControl fullWidth sx={{ mb: 2 }}>
+                    <InputLabel>Authentication Method</InputLabel>
+                    <Select
+                      value={securitySettings.authentication.method}
+                      onChange={(e) => updateSecuritySettingsMutation.mutate({
+                        authentication: { ...securitySettings.authentication, method: e.target.value as any }
+                      })}
+                      label="Authentication Method"
+                    >
+                      <MenuItem value="jwt">JWT</MenuItem>
+                      <MenuItem value="oauth2">OAuth 2.0</MenuItem>
+                      <MenuItem value="api_key">API Key</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <TextField
+                    fullWidth
+                    label="JWT Secret"
+                    type="password"
+                    value={securitySettings.authentication.jwtSecret}
+                    onChange={(e) => updateSecuritySettingsMutation.mutate({
+                      authentication: { ...securitySettings.authentication, jwtSecret: e.target.value }
+                    })}
+                    sx={{ mb: 2 }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="JWT Expiry (seconds)"
+                    type="number"
+                    value={securitySettings.authentication.jwtExpiry}
+                    onChange={(e) => updateSecuritySettingsMutation.mutate({
+                      authentication: { ...securitySettings.authentication, jwtExpiry: parseInt(e.target.value) }
+                    })}
+                    sx={{ mb: 2 }}
+                  />
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={securitySettings.authentication.requireMFA}
+                        onChange={(e) => updateSecuritySettingsMutation.mutate({
+                          authentication: { ...securitySettings.authentication, requireMFA: e.target.checked }
+                        })}
+                      />
+                    }
+                    label="Require MFA"
+                  />
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="h6" gutterBottom>
+                    CORS Settings
+                  </Typography>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={securitySettings.cors.enabled}
+                        onChange={(e) => updateSecuritySettingsMutation.mutate({
+                          cors: { ...securitySettings.cors, enabled: e.target.checked }
+                        })}
+                      />
+                    }
+                    label="Enable CORS"
+                  />
+                  <TextField
+                    fullWidth
+                    label="Allowed Origins"
+                    value={securitySettings.cors.allowedOrigins.join(', ')}
+                    onChange={(e) => updateSecuritySettingsMutation.mutate({
+                      cors: { ...securitySettings.cors, allowedOrigins: e.target.value.split(', ') }
+                    })}
+                    sx={{ mb: 2, mt: 2 }}
+                    helperText="Comma-separated list of allowed origins"
+                  />
+                  <TextField
+                    fullWidth
+                    label="Allowed Methods"
+                    value={securitySettings.cors.allowedMethods.join(', ')}
+                    onChange={(e) => updateSecuritySettingsMutation.mutate({
+                      cors: { ...securitySettings.cors, allowedMethods: e.target.value.split(', ') }
+                    })}
+                    sx={{ mb: 2 }}
+                    helperText="Comma-separated list of allowed HTTP methods"
+                  />
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+        )}
+
+        {selectedTab === 4 && (
+          <Card>
+            <CardContent>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" mb={3}>
+                <Typography variant="h6">Cache Configuration</Typography>
+                <Button
+                  variant="contained"
+                  startIcon={<SaveIcon />}
+                  onClick={handleSaveCacheSettings}
+                >
+                  Save Settings
+                </Button>
+              </Stack>
+              <Grid container spacing={3}>
+                <Grid item xs={12} md={6}>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={cacheSettings.enabled}
+                        onChange={(e) => updateCacheSettingsMutation.mutate({ enabled: e.target.checked })}
+                      />
+                    }
+                    label="Enable Caching"
+                  />
+                  <FormControl fullWidth sx={{ mb: 2, mt: 2 }}>
+                    <InputLabel>Cache Type</InputLabel>
+                    <Select
+                      value={cacheSettings.type}
+                      onChange={(e) => updateCacheSettingsMutation.mutate({ type: e.target.value as any })}
+                      label="Cache Type"
+                    >
+                      <MenuItem value="memory">Memory</MenuItem>
+                      <MenuItem value="redis">Redis</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <TextField
+                    fullWidth
+                    label="Redis URL"
+                    value={cacheSettings.redisUrl}
+                    onChange={(e) => updateCacheSettingsMutation.mutate({ redisUrl: e.target.value })}
+                    sx={{ mb: 2 }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="TTL (seconds)"
+                    type="number"
+                    value={cacheSettings.ttl}
+                    onChange={(e) => updateCacheSettingsMutation.mutate({ ttl: parseInt(e.target.value) })}
+                    sx={{ mb: 2 }}
+                  />
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <TextField
+                    fullWidth
+                    label="Max Size"
+                    type="number"
+                    value={cacheSettings.maxSize}
+                    onChange={(e) => updateCacheSettingsMutation.mutate({ maxSize: parseInt(e.target.value) })}
+                    sx={{ mb: 2 }}
+                  />
+                  <FormControl fullWidth sx={{ mb: 2 }}>
+                    <InputLabel>Eviction Policy</InputLabel>
+                    <Select
+                      value={cacheSettings.evictionPolicy}
+                      onChange={(e) => updateCacheSettingsMutation.mutate({ evictionPolicy: e.target.value as any })}
+                      label="Eviction Policy"
+                    >
+                      <MenuItem value="lru">LRU (Least Recently Used)</MenuItem>
+                      <MenuItem value="lfu">LFU (Least Frequently Used)</MenuItem>
+                      <MenuItem value="fifo">FIFO (First In, First Out)</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Provider Dialog */}
+        <Dialog
+          open={isProviderDialogOpen}
+          onClose={() => setIsProviderDialogOpen(false)}
+          maxWidth="md"
+          fullWidth
+        >
+          <DialogTitle>
+            {editingProvider?.name ? 'Edit Provider' : 'Add Provider'}
+          </DialogTitle>
+          <DialogContent>
+            <Grid container spacing={2} sx={{ mt: 1 }}>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  fullWidth
+                  label="Provider Name"
+                  value={editingProvider?.name || ''}
+                  onChange={(e) => setEditingProvider({ ...editingProvider, name: e.target.value })}
+                />
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  fullWidth
+                  label="API Key"
+                  type="password"
+                  value={editingProvider?.apiKey || ''}
+                  onChange={(e) => setEditingProvider({ ...editingProvider, apiKey: e.target.value })}
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
+                  label="Base URL"
+                  value={editingProvider?.baseUrl || ''}
+                  onChange={(e) => setEditingProvider({ ...editingProvider, baseUrl: e.target.value })}
+                />
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  fullWidth
+                  label="Timeout (ms)"
+                  type="number"
+                  value={editingProvider?.timeout || 30000}
+                  onChange={(e) => setEditingProvider({ ...editingProvider, timeout: parseInt(e.target.value) })}
+                />
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  fullWidth
+                  label="Max Tokens"
+                  type="number"
+                  value={editingProvider?.maxTokens || 4000}
+                  onChange={(e) => setEditingProvider({ ...editingProvider, maxTokens: parseInt(e.target.value) })}
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={editingProvider?.enabled || false}
+                      onChange={(e) => setEditingProvider({ ...editingProvider, enabled: e.target.checked })}
+                    />
+                  }
+                  label="Enable Provider"
+                />
+              </Grid>
+            </Grid>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setIsProviderDialogOpen(false)}>Cancel</Button>
+            <Button
+              onClick={() => {
+                if (editingProvider) {
+                  const updatedProviders = editingProvider.name
+                    ? apiSettings.providers.map(p => p.name === editingProvider.name ? editingProvider : p)
+                    : [...apiSettings.providers, editingProvider];
+                  updateApiSettingsMutation.mutate({ providers: updatedProviders });
+                  setIsProviderDialogOpen(false);
+                  setEditingProvider(null);
+                }
+              }}
+              variant="contained"
+            >
+              Save
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Snackbar */}
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
+          onClose={handleCloseSnackbar}
+        >
+          <MuiAlert
+            onClose={handleCloseSnackbar}
+            severity={snackbar.severity}
+            sx={{ width: '100%' }}
+          >
+            {snackbar.message}
+          </MuiAlert>
+        </Snackbar>
+      </Container>
+    </Box>
+  );
+}
+
+// Main Page Component
+export default function SettingsPage() {
+  return (
+    <QueryProvider>
+      <ThemeProvider>
+        <Settings />
+      </ThemeProvider>
+    </QueryProvider>
+  );
+} 

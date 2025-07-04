@@ -1,0 +1,49 @@
+  async getNotificationSettings() {
+    try {
+      const response = await this.client.get('/settings/notifications');
+      return response.data;
+    } catch (error) {
+      console.error('Failed to fetch notification settings:', error);
+      throw error;
+    }
+  }
+
+  async getSecuritySettings() {
+    try {
+      const response = await this.client.get('/settings/security');
+      return response.data;
+    } catch (error) {
+      console.error('Failed to fetch security settings:', error);
+      throw error;
+    }
+  }
+
+  async getCacheSettings() {
+    try {
+      const response = await this.client.get('/settings/cache');
+      return response.data;
+    } catch (error) {
+      console.error('Failed to fetch cache settings:', error);
+      throw error;
+    }
+  }
+
+  async updateSystemSettings(settings: any) {
+    try {
+      const response = await this.client.put('/settings/system', settings);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to update system settings:', error);
+      throw error;
+    }
+  }
+
+  async updateApiSettings(settings: any) {
+    try {
+      const response = await this.client.put('/settings/api', settings);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to update API settings:', error);
+      throw error;
+    }
+  }
