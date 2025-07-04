@@ -1,0 +1,97 @@
+# Production Environment Configuration
+# Overrides base config.yaml for production
+
+environment: production
+log_level: warn
+
+# Production server settings
+server:
+  port: 8080
+  host: "0.0.0.0"
+  read_timeout: 30
+  write_timeout: 30
+  idle_timeout: 60
+
+# Production database settings
+database:
+  ssl_mode: require
+  max_open_conns: 50
+  max_idle_conns: 25
+  conn_max_life: "30m"
+
+# Production Redis settings
+redis:
+  database: 0
+  pool_size: 25
+
+# Production provider settings (strict rate limits)
+providers:
+  openai:
+    timeout: 60s
+    max_retries: 3
+    rate_limit:
+      enabled: true
+      requests_per_min: 50
+      tokens_per_min: 50000
+      burst_size: 75
+  anthropic:
+    timeout: 60s
+    max_retries: 3
+    rate_limit:
+      enabled: true
+      requests_per_min: 40
+      tokens_per_min: 30000
+      burst_size: 60
+
+# Production proxy settings
+proxy:
+  enabled: true
+  ssl_bump: true
+
+# Production security settings (strict)
+security:
+  jwt_expiry: 8h  # Shorter expiry for production
+  cors_enabled: true
+  cors_origins:
+    - "https://your-domain.com"
+    - "https://api.your-domain.com"
+  tls_min_version: "1.3"
+
+# Production cache settings
+cache:
+  enabled: true
+  default_ttl: 1h
+  max_size: "1GB"
+
+# Production rate limiting (strict)
+rate_limit:
+  enabled: true
+  requests_per_min: 100
+  burst_size: 150
+  cleanup_interval: 1m
+
+# Production monitoring (comprehensive)
+monitoring:
+  enabled: true
+  metrics_port: 9090
+  prometheus_addr: "prometheus:9090"
+
+# Production timeouts (optimized)
+timeouts:
+  default_request_timeout: "30s"
+  chat_completion_timeout: "60s"
+  streaming_timeout: "300s"
+  health_check_timeout: "10s"
+  provider_connect_timeout: "10s"
+  provider_read_timeout: "45s"
+  database_query_timeout: "3s"
+  cache_operation_timeout: "1s"
+
+# Production router settings (optimized)
+router:
+  strategy: "latency_based"  # Use latency-based for production
+  enable_failover: true
+  max_retries: 3
+  circuit_breaker_enabled: true
+  circuit_breaker_threshold: 3
+  circuit_breaker_window: "2m" 

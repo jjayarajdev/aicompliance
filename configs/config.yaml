@@ -1,0 +1,985 @@
+# AI Gateway PoC Configuration
+# Environment: development, staging, production
+environment: development
+log_level: info
+
+# HTTP Server Configuration
+server:
+  port: 8080
+  host: "0.0.0.0"
+  read_timeout: 30
+  write_timeout: 30
+  idle_timeout: 60
+
+# Database Configuration
+database:
+  postgresql:
+    host: localhost
+    port: 5432
+    username: gateway_user
+    password: gateway_password
+    database: ai_gateway
+    ssl_mode: prefer
+    max_open_conns: 25
+    max_idle_conns: 5
+    conn_max_lifetime: 5m
+    conn_max_idle_time: 5m
+    connect_timeout: 10s
+  redis:
+    host: localhost
+    port: 6379
+    password: ""
+    database: 0
+    pool_size: 10
+    min_idle_conns: 2
+    max_conn_age: 30m
+    pool_timeout: 5s
+    idle_timeout: 5m
+    idle_check_frequency: 1m
+    dial_timeout: 5s
+    read_timeout: 3s
+    write_timeout: 3s
+
+# AI Provider Configuration
+providers:
+  openai:
+    name: "openai"
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "https://api.openai.com/v1"
+    timeout: 60s
+    max_retries: 3
+    retry_delay: 1s
+    default_model: "gpt-3.5-turbo"
+    organization: "${OPENAI_ORG_ID:-}"
+    rate_limit:
+      enabled: true
+      requests_per_min: 60
+      tokens_per_min: 90000
+      burst_size: 100
+      cleanup_interval: 5m
+  
+  anthropic:
+    name: "anthropic"
+    api_key: "${ANTHROPIC_API_KEY}"
+    base_url: "https://api.anthropic.com/v1"
+    timeout: 60s
+    max_retries: 3
+    retry_delay: 1s
+    default_model: "claude-3-haiku-20240307"
+    api_version: "2023-06-01"
+    rate_limit:
+      enabled: true
+      requests_per_min: 50
+      tokens_per_min: 40000
+      burst_size: 75
+      cleanup_interval: 5m
+
+# Provider Manager Configuration
+provider_manager:
+  default_timeout: 60s
+  default_max_retries: 3
+  default_retry_delay: 1s
+  enable_failover: true
+  failover_strategy: "round_robin"
+  max_failure_count: 5
+  failure_window: 10m
+  health_check_interval: 5m
+  health_check_timeout: 10s
+
+# AI Provider Router Configuration
+router:
+  strategy: "round_robin"  # Options: round_robin, random, weighted, health_based, latency_based
+  enable_failover: true
+  max_retries: 3
+  failover_timeout: 30s
+  health_check_interval: 5m
+  circuit_breaker_enabled: true
+  circuit_breaker_threshold: 5
+  circuit_breaker_window: 5m
+  weighted_providers:
+    - provider_name: "openai"
+      weight: 3
+    - provider_name: "anthropic"
+      weight: 2
+
+# Forward Proxy Configuration
+proxy:
+  enabled: true
+  port: 8443
+  ssl_bump: true
+  cert_file: "./certs/server.crt"
+  key_file: "./certs/server.key"
+  target_hosts:
+    - "api.openai.com"
+    - "api.anthropic.com"
+
+# Security Configuration
+security:
+  jwt_secret: "${JWT_SECRET:-your-super-secret-jwt-key-change-this-in-production}"
+  jwt_expiry: 24h
+  api_key_header: "X-API-Key"
+  cors_enabled: true
+  cors_origins:
+    - "http://localhost:3000"  # Next.js development server
+    - "http://localhost:8080"  # API server
+  tls_min_version: "1.2"
+
+# Cache Configuration
+cache:
+  enabled: true
+  default_ttl: 1h
+  max_size: "100MB"
+  prefix: "gateway:"
+
+# Rate Limiting Configuration
+rate_limit:
+  enabled: true
+  requests_per_min: 60
+  burst_size: 100
+  cleanup_interval: 5m
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  metrics_port: 9090
+  metrics_path: "/metrics"
+  health_path: "/health"
+  prometheus_addr: ""
+
+# Logging Configuration
+logging:
+  level: "info"
+  format: "json"  # json, text
+  output: "stdout"  # stdout, stderr, file, both
+  file:
+    enabled: false
+    path: "logs/gateway.log"
+    max_size: 100  # megabytes
+    max_backups: 3
+    max_age: 28  # days
+    compress: true
+  fields:
+    service: "ai-gateway"
+    version: "1.0.0"
+  request_logging:
+    enabled: true
+    headers: false
+    body: false
+    query_params: true
+    response_body: false
+    exclude_paths:
+      - "/health"
+      - "/metrics"
+    max_body_size: 1024  # bytes
+  component_levels:
+    server: "info"
+    database: "warn"
+    providers: "info"
+    proxy: "info"
+
+# PII Detection Configuration
+pii_detection:
+  enabled: true
+  sensitivity_level: "medium"  # low, medium, high
+  redaction_mode: "mask"       # mask, remove, hash
+  max_text_size: 1048576       # 1MB
+  patterns:
+    # Override default patterns if needed
+    # ssn: "custom_ssn_pattern"
+  custom_patterns:
+    # Add organization-specific patterns
+    employee_id: "\\bEMP\\d{6}\\b"
+    internal_id: "\\bINT-[A-Z0-9]{8}\\b"
+  exclude_patterns:
+    # Test/demo data to exclude
+    - "test@example\\.com"
+    - "555-0123"
+    - "000-00-0000"
+
+# Content Classification Configuration
+content_classification:
+  enabled: true
+  default_level: "internal"
+  min_confidence: 0.3
+  max_text_size: 1048576  # 1MB
+  
+  # Level-specific configurations
+  level_configs:
+    public:
+      enabled: true
+      weight: 1.0
+      keywords:
+        - "public information"
+        - "press release"
+        - "marketing material"
+    internal:
+      enabled: true
+      weight: 1.0
+      keywords:
+        - "internal use only"
+        - "team communication"
+        - "employee information"
+    confidential:
+      enabled: true
+      weight: 1.2
+      keywords:
+        - "confidential"
+        - "proprietary information"
+        - "business strategy"
+        - "financial data"
+    restricted:
+      enabled: true
+      weight: 1.5
+      keywords:
+        - "classified"
+        - "top secret"
+        - "security credentials"
+        - "access tokens"
+  
+  # Global classification rules
+  global_rules:
+    - name: "high_pii_count"
+      level: "confidential"
+      weight: 2.0
+      enabled: true
+      conditions:
+        - type: "pii_count"
+          operator: ">="
+          value: 3
+    - name: "security_credentials"
+      level: "restricted"
+      weight: 3.0
+      enabled: true
+      conditions:
+        - type: "pattern"
+          operator: "matches"
+          value: "(?i)(password|token|key|secret)[:=]\\s*[a-zA-Z0-9]+"
+
+# ML-Powered Content Analysis Configuration
+ml_analysis:
+  enabled: true
+  default_provider: "mock"
+  cache_enabled: true
+  cache_ttl: "1h"
+  timeout: "30s"
+  min_confidence_score: 0.3
+  enable_sentiment: true
+  enable_topics: true
+  enable_entities: true
+  
+  # Provider configurations
+  providers:
+    mock:
+      enabled: true
+      timeout: "30s"
+    openai:
+      enabled: false
+      endpoint: "https://api.openai.com/v1"
+      model: "gpt-4"
+      timeout: "60s"
+    anthropic:
+      enabled: false
+      endpoint: "https://api.anthropic.com/v1"
+      model: "claude-3-sonnet-20240229"
+      timeout: "60s"
+  
+  # Feature extraction settings
+  feature_extraction:
+    enable_keyword_extraction: true
+    enable_phrase_extraction: true
+    max_keywords: 20
+    max_phrases: 10
+    min_term_frequency: 2
+
+# Content Preprocessing Configuration
+preprocessing:
+  enabled: true
+  
+  # Text normalization options
+  normalize_whitespace: true
+  remove_control_chars: true
+  normalize_unicode: true
+  preserve_punctuation: true
+  preserve_numbers: true
+  convert_to_lowercase: false
+  remove_extra_spaces: true
+  trim_whitespace: true
+  
+  # Language detection options
+  language_detection:
+    enabled: true
+    min_text_length: 10
+    max_languages: 3
+    confidence_threshold: 0.3
+    target_languages: []  # Empty array means all languages
+    
+  # Performance options
+  max_processing_time: "5s"
+  chunk_size: 10000
+  
+  # Preprocessing profiles for different use cases
+  profiles:
+    default:
+      normalize_whitespace: true
+      remove_control_chars: true
+      normalize_unicode: true
+      preserve_punctuation: true
+      preserve_numbers: true
+      convert_to_lowercase: false
+      remove_extra_spaces: true
+      trim_whitespace: true
+      language_detection:
+        enabled: true
+        confidence_threshold: 0.3
+    aggressive:
+      normalize_whitespace: true
+      remove_control_chars: true
+      normalize_unicode: true
+      preserve_punctuation: false
+      preserve_numbers: false
+      convert_to_lowercase: true
+      remove_extra_spaces: true
+      trim_whitespace: true
+      language_detection:
+        enabled: true
+        confidence_threshold: 0.5
+    minimal:
+      normalize_whitespace: false
+      remove_control_chars: true
+      normalize_unicode: false
+      preserve_punctuation: true
+      preserve_numbers: true
+      convert_to_lowercase: false
+      remove_extra_spaces: false
+      trim_whitespace: true
+      language_detection:
+        enabled: false
+
+# Parallel Analysis Pipeline Configuration
+analysis_pipeline:
+  enabled: true
+  
+  # Component enablement
+  components:
+    enable_preprocessing: true
+    enable_pii_detection: true
+    enable_classification: true
+    enable_ml_analysis: true
+    enable_file_scanning: false  # Disabled by default for text content
+  
+  # Parallelism and performance settings
+  performance:
+    max_concurrency: 4
+    component_timeout: "30s"
+    overall_timeout: "60s"
+    warmup_components: true
+    enable_metrics: true
+  
+  # Error handling
+  error_handling:
+    continue_on_error: true
+    require_all_components: false
+    
+  # Pipeline profiles for different use cases
+  profiles:
+    default:
+      components:
+        enable_preprocessing: true
+        enable_pii_detection: true
+        enable_classification: true
+        enable_ml_analysis: true
+        enable_file_scanning: false
+      performance:
+        max_concurrency: 4
+        component_timeout: "30s"
+        overall_timeout: "60s"
+        warmup_components: true
+      error_handling:
+        continue_on_error: true
+        require_all_components: false
+        
+    high_performance:
+      components:
+        enable_preprocessing: true
+        enable_pii_detection: true
+        enable_classification: true
+        enable_ml_analysis: true
+        enable_file_scanning: false
+      performance:
+        max_concurrency: 8
+        component_timeout: "10s"
+        overall_timeout: "30s"
+        warmup_components: true
+      error_handling:
+        continue_on_error: true
+        require_all_components: false
+        
+    comprehensive:
+      components:
+        enable_preprocessing: true
+        enable_pii_detection: true
+        enable_classification: true
+        enable_ml_analysis: true
+        enable_file_scanning: true
+      performance:
+        max_concurrency: 6
+        component_timeout: "60s"
+        overall_timeout: "120s"
+        warmup_components: true
+      error_handling:
+        continue_on_error: false
+        require_all_components: true
+        
+    minimal:
+      components:
+        enable_preprocessing: true
+        enable_pii_detection: true
+        enable_classification: false
+        enable_ml_analysis: false
+        enable_file_scanning: false
+      performance:
+        max_concurrency: 2
+        component_timeout: "15s"
+        overall_timeout: "30s"
+        warmup_components: false
+      error_handling:
+        continue_on_error: true
+        require_all_components: false
+  
+  # Result aggregation settings
+  aggregation:
+    confidence_weights:
+      pii_detection: 0.3
+      classification: 0.3
+      ml_analysis: 0.25
+      file_scanning: 0.15
+    risk_level_mapping:
+      low: 1
+      medium: 2
+      high: 3
+      critical: 4
+      public: 1
+      internal: 2
+      confidential: 3
+      restricted: 4
+      
+  # Performance monitoring
+  monitoring:
+    track_component_stats: true
+    track_bottlenecks: true
+    calculate_speedup: true
+    log_slow_requests: true
+    slow_request_threshold: "1s"
+
+  # Ensemble voting system for enhanced confidence scoring and decision making
+  ensemble_voting:
+    enabled: true
+    voting_strategy: "weighted"  # majority, weighted, ranked_choice, consensus, bayesian
+    weighted_voting: true
+    consensus_threshold: 0.7
+    disagreement_threshold: 0.5
+    
+    # Confidence calibration
+    enable_calibration: true
+    historical_samples: 100
+    calibration_decay_factor: 0.95
+    
+    # Component weights (can override aggregation weights)
+    component_weights:
+      pii_detection: 0.30
+      classification: 0.30
+      ml_analysis: 0.25
+      file_scanning: 0.15
+    dynamic_weighting: false
+    
+    # Uncertainty estimation
+    enable_uncertainty: true
+    uncertainty_method: "variance"  # variance, entropy, bootstrap
+    
+    # Decision thresholds
+    min_confidence_threshold: 0.3
+    high_confidence_threshold: 0.8
+    
+    # Voting strategy profiles for different use cases
+    profiles:
+      conservative:
+        voting_strategy: "consensus"
+        consensus_threshold: 0.8
+        disagreement_threshold: 0.3
+        min_confidence_threshold: 0.5
+      
+      performance:
+        voting_strategy: "weighted"
+        consensus_threshold: 0.6
+        disagreement_threshold: 0.6
+        min_confidence_threshold: 0.2
+      
+      security_focused:
+        voting_strategy: "bayesian"
+        consensus_threshold: 0.9
+        disagreement_threshold: 0.2
+        min_confidence_threshold: 0.7
+
+# Custom Pattern Management System for organization-specific detection rules
+custom_patterns:
+  enabled: true
+  
+  # Pattern limits and performance
+  max_patterns_per_org: 100
+  max_pattern_length: 1000
+  max_execution_time: "10ms"
+  
+  # Versioning and history
+  enable_versioning: true
+  max_versions_per_pattern: 50
+  
+  # Validation and safety
+  require_validation: true
+  auto_deactivate_on_errors: true
+  performance_tracking: true
+  
+  # Default patterns for common organization types
+  default_patterns:
+    financial:
+      - name: "Bank Account Number"
+        pattern: "\\b\\d{8,12}\\b"
+        pii_type: "bank_account"
+        confidence: 0.8
+        
+      - name: "SWIFT Code"
+        pattern: "\\b[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?\\b"
+        pii_type: "swift_code"
+        confidence: 0.9
+        
+    healthcare:
+      - name: "Medical Record Number"
+        pattern: "\\bMRN[-:]?\\s*\\d{6,10}\\b"
+        pii_type: "medical_record"
+        confidence: 0.85
+        
+      - name: "Patient ID"
+        pattern: "\\bPT[-:]?\\s*\\d{5,8}\\b"
+        pii_type: "patient_id"
+        confidence: 0.8
+        
+    corporate:
+      - name: "Employee ID"
+        pattern: "\\bEMP[-:]?\\s*\\d{4,8}\\b"
+        pii_type: "employee_id"
+        confidence: 0.9
+        
+      - name: "Department Code"
+        pattern: "\\bDEPT[-:]?\\s*[A-Z]{2,4}\\b"
+        pii_type: "department_code"
+        confidence: 0.7
+        
+    government:
+      - name: "Case Number"
+        pattern: "\\bCASE[-:]?\\s*\\d{4}-\\d{6}\\b"
+        pii_type: "case_number"
+        confidence: 0.9
+        
+      - name: "Reference Number"
+        pattern: "\\bREF[-:]?\\s*[A-Z]{2}\\d{8}\\b"
+        pii_type: "reference_number"
+        confidence: 0.85
+        
+  # Pattern categories for organization
+  categories:
+    - name: "Identity Documents"
+      description: "Patterns for identifying identity documents"
+      
+    - name: "Financial Information"
+      description: "Patterns for financial data detection"
+      
+    - name: "Medical Information"
+      description: "Patterns for healthcare-related data"
+      
+    - name: "Corporate Data"
+      description: "Patterns for internal corporate information"
+      
+    - name: "Government Data"
+      description: "Patterns for government and public sector data"
+      
+  # Pattern testing and validation
+  testing:
+    required_test_cases: 5
+    performance_threshold_ms: 5
+    complexity_threshold: 150
+    
+    # Banned pattern constructs for security
+    banned_constructs:
+      - "(?#"  # Comments can be used for ReDoS attacks
+      - "(?R)" # Recursive patterns
+      - "(?{" # Code execution
+      
+  # Automatic pattern suggestions based on content analysis
+  auto_suggestions:
+    enabled: true
+    min_occurrences: 10
+    confidence_threshold: 0.8
+    suggest_improvements: true
+
+# Policy Engine Configuration
+policy_engine:
+  enable_policy_validation: true
+  default_policy_timeout: 500ms
+  policy_cache_size: 1000
+  enable_metrics: true
+  default_severity: "medium"
+  max_policies_per_request: 50
+  
+  # Real-time policy engine configuration
+  real_time_engine:
+    enabled: true
+    max_latency: 200ms  # Target <200ms
+    max_concurrency: 20
+    worker_pool_size: 10
+    
+    # Caching configuration for performance
+    policy_cache_ttl: 5m
+    result_cache_ttl: 1m
+    condition_cache_ttl: 30s
+    max_cache_size: 2000
+    
+    # Circuit breaker for resilience
+    failure_threshold: 5
+    recovery_timeout: 30s
+    
+    # Monitoring and health checks
+    metrics_enabled: true
+    health_check_interval: 10s
+  
+  # Conflict resolution strategies
+  conflict_resolution:
+    strategy: "most_restrictive"
+    enable_logging: true
+    max_conflicts: 10
+    
+    # Action priority ordering (highest to lowest)
+    action_priorities:
+      - "block"
+      - "quarantine"
+      - "redact"
+      - "mask"
+      - "warn"
+      - "log"
+      - "allow"
+  
+  # Validation rules
+  validation_rules:
+    max_rules_per_policy: 20
+    max_condition_depth: 5
+    required_fields: ["id", "name", "rules"]
+    allow_empty_conditions: false
+    validate_regex_patterns: true
+    max_policy_size_kb: 500
+  
+  # Policy logging configuration
+  logging:
+    enable_evaluation_logs: true
+    enable_action_logs: true
+    enable_conflict_logs: true
+    log_level: "info"
+    retention_days: 90
+    batch_size: 100
+    flush_interval: 10s
+    
+    # Detailed logging options
+    include_request_content: false  # For privacy
+    include_analysis_results: true
+    include_evaluation_trace: true
+    max_log_entry_size_kb: 100
+  
+  # Metrics collection configuration
+  metrics:
+    enable_latency_histogram: true
+    enable_throughput_metrics: true
+    enable_cache_metrics: true
+    enable_error_metrics: true
+    collection_interval: 30s
+    retention_period: 24h
+    
+    # Performance thresholds
+    latency_warning_threshold: 150ms
+    latency_critical_threshold: 300ms
+    error_rate_warning_threshold: 0.05  # 5%
+    error_rate_critical_threshold: 0.10 # 10%
+  
+  # Storage configuration
+  storage:
+    provider: "memory"  # memory, redis, database
+    connection_string: ""
+    max_connections: 10
+    connection_timeout: 5s
+    read_timeout: 1s
+    write_timeout: 1s
+    
+    # Backup and persistence
+    enable_persistence: false
+    backup_interval: 1h
+    max_backup_files: 24
+
+  # Policy Version Management and Rollback Configuration
+  version_manager:
+    enabled: true
+    auto_approval_enabled: false
+    required_approvers: ["security_officer", "policy_owner"]
+    max_versions_per_policy: 50
+    version_retention_period: 365d  # 1 year
+    change_detection_enabled: true
+    impact_analysis_enabled: true
+    rollback_checks_enabled: true
+    audit_logging_enabled: true
+    
+    # Approval workflow configuration
+    approval_workflow:
+      enabled: true
+      require_approval: true
+      parallel_approval: false
+      approval_timeout: 72h
+      notification_enabled: true
+      notification_channels: ["email", "slack"]
+    
+    # Rollback configuration
+    rollback_settings:
+      enabled: true
+      require_approval: false  # Emergency rollbacks don't require approval
+      auto_backup: true
+      validation_required: true
+      max_rollback_depth: 10
+      rollback_timeout: 30s
+      post_rollback_checks: true
+    
+    # Archive and cleanup configuration
+    archive_settings:
+      enabled: true
+      auto_archive_enabled: true
+      archive_after_days: 90
+      purge_after_days: 365
+      keep_active_versions: 5
+      compress_archives: true
+
+# Advanced Condition Evaluator Configuration for regex, ML, and expression support
+advanced_condition_evaluator:
+  enabled: true
+  
+  # Regex evaluation configuration
+  regex:
+    enable_caching: true
+    cache_size: 1000
+    max_complexity: 10000
+    default_timeout: 100ms
+    enable_case_sensitive: true
+    max_matches: 100
+    
+  # Machine Learning model integration
+  ml_models:
+    enabled: true
+    cache_size: 50
+    default_provider: "mock"
+    evaluation_timeout: 2s
+    min_confidence_threshold: 0.3
+    
+    # Model configurations by type
+    classification_models:
+      sensitivity_classifier:
+        provider: "mock"
+        threshold: 0.5
+        enable_keyword_boost: true
+        keywords:
+          sensitive: ["confidential", "secret", "private", "personal", "ssn", "credit card"]
+          
+    sentiment_models:
+      default_sentiment:
+        provider: "mock"
+        enable_word_analysis: true
+        positive_keywords: ["good", "great", "excellent", "positive", "happy", "love"]
+        negative_keywords: ["bad", "terrible", "awful", "negative", "sad", "hate"]
+        
+    scoring_models:
+      complexity_scorer:
+        provider: "mock"
+        length_factor: 0.01
+        word_factor: 0.1
+        max_score: 1.0
+  
+  # Expression evaluation configuration
+  expressions:
+    enabled: true
+    cache_size: 500
+    max_depth: 20
+    max_executions: 1000
+    evaluation_timeout: 1s
+    enable_sandbox: true
+    
+    # Supported expression languages
+    languages:
+      - "javascript"
+      - "go"
+      - "math"
+      - "template"
+    
+    # Security restrictions
+    security:
+      level: "medium"  # low, medium, high, max
+      allow_network_access: false
+      allow_file_access: false
+      allow_system_calls: false
+      max_memory_usage: "10MB"
+      
+    # Variable contexts
+    default_variables:
+      now: "current_timestamp"
+      today: "current_date"
+  
+  # Built-in function registry
+  builtin_functions:
+    enabled: true
+    
+    # Function categories to enable
+    enabled_categories:
+      - "string"      # String manipulation functions
+      - "math"        # Mathematical operations
+      - "date"        # Date/time operations
+      - "array"       # Array operations
+      - "regex"       # Regular expression functions
+      - "ml"          # Machine learning functions
+      - "security"    # Security operations
+      - "analysis"    # Content analysis functions
+      - "validation"  # Data validation functions
+      - "utility"     # General utility functions
+    
+    # Function-specific configurations
+    function_configs:
+      regex_match:
+        enable_caching: true
+        max_pattern_length: 1000
+        security_level: "medium"
+        
+      detect_pii:
+        patterns:
+          ssn: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+          phone: "\\b\\d{3}-\\d{3}-\\d{4}\\b"
+          email: "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b"
+          credit_card: "\\b\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}\\b"
+        security_level: "high"
+        
+      hash_functions:
+        allowed_algorithms: ["md5", "sha256", "sha512"]
+        security_level: "medium"
+  
+  # Performance and monitoring
+  performance:
+    enable_metrics: true
+    track_latency: true
+    track_cache_performance: true
+    track_error_rates: true
+    
+    # Performance thresholds
+    thresholds:
+      evaluation_latency: 100ms
+      cache_hit_ratio: 0.8
+      error_rate: 0.05
+      
+    # History tracking
+    history:
+      enabled: true
+      max_snapshots: 100
+      snapshot_interval: 1m
+  
+  # Caching configuration
+  caching:
+    global_ttl: 5m
+    regex_cache_ttl: 10m
+    expression_cache_ttl: 5m
+    ml_result_cache_ttl: 2m
+    function_result_cache_ttl: 1m
+    
+    # Cache eviction policies
+    eviction_policy: "lru"  # lru, lfu, random
+    memory_limit: "100MB"
+    
+  # Security and safety
+  security:
+    enable_input_validation: true
+    enable_output_sanitization: true
+    max_evaluation_time: 5s
+    max_memory_usage: "50MB"
+    
+    # Regex security
+    regex_security:
+      enable_redos_protection: true
+      max_backtrack_steps: 10000
+      banned_constructs:
+        - "(?#"  # Comments
+        - "(?R)" # Recursion
+        - "(?{" # Code execution
+        
+    # Expression security
+    expression_security:
+      enable_ast_validation: true
+      max_ast_nodes: 1000
+      banned_functions:
+        - "eval"
+        - "exec"
+        - "system"
+        - "import"
+        
+  # Error handling and resilience
+  error_handling:
+    enable_graceful_degradation: true
+    fallback_to_basic_evaluation: true
+    retry_on_timeout: true
+    max_retries: 2
+    retry_delay: 100ms
+    
+    # Circuit breaker for ML models
+    circuit_breaker:
+      enabled: true
+      failure_threshold: 5
+      recovery_timeout: 30s
+      half_open_requests: 3
+  
+  # Debugging and development
+  debug:
+    enable_trace_logging: false
+    log_evaluation_details: false
+    log_intermediate_results: false
+    enable_profiling: false
+    
+  # Configuration profiles for different environments
+  profiles:
+    development:
+      debug:
+        enable_trace_logging: true
+        log_evaluation_details: true
+        log_intermediate_results: true
+      performance:
+        enable_metrics: true
+      security:
+        level: "low"
+        
+    production:
+      debug:
+        enable_trace_logging: false
+        log_evaluation_details: false
+        log_intermediate_results: false
+      performance:
+        enable_metrics: true
+        track_latency: true
+      security:
+        level: "high"
+        enable_input_validation: true
+        enable_output_sanitization: true
+        
+    testing:
+      debug:
+        enable_trace_logging: true
+        log_evaluation_details: true
+      performance:
+        enable_metrics: true
+      ml_models:
+        enabled: false  # Use mock models only
+      expressions:
+        enable_sandbox: true 

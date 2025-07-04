@@ -1,0 +1,98 @@
+# Staging Environment Configuration
+# Mimics production but with some relaxed settings for testing
+
+environment: staging
+log_level: info
+
+# Staging server settings
+server:
+  port: 8080
+  host: "0.0.0.0"
+  read_timeout: 45
+  write_timeout: 45
+  idle_timeout: 90
+
+# Staging database settings
+database:
+  database: ai_gateway_staging
+  ssl_mode: prefer
+  max_open_conns: 25
+  max_idle_conns: 10
+  conn_max_life: "1h"
+
+# Staging Redis settings
+redis:
+  database: 2
+  pool_size: 15
+
+# Staging provider settings (moderate rate limits)
+providers:
+  openai:
+    timeout: 90s
+    max_retries: 4
+    rate_limit:
+      enabled: true
+      requests_per_min: 80
+      tokens_per_min: 70000
+      burst_size: 120
+  anthropic:
+    timeout: 90s
+    max_retries: 4
+    rate_limit:
+      enabled: true
+      requests_per_min: 60
+      tokens_per_min: 50000
+      burst_size: 90
+
+# Staging proxy settings
+proxy:
+  enabled: true
+  ssl_bump: true
+
+# Staging security settings
+security:
+  jwt_expiry: 12h
+  cors_enabled: true
+  cors_origins:
+    - "https://staging.your-domain.com"
+    - "https://staging-api.your-domain.com"
+    - "http://localhost:3000"  # For testing
+  tls_min_version: "1.2"
+
+# Staging cache settings
+cache:
+  enabled: true
+  default_ttl: 30m
+  max_size: "500MB"
+
+# Staging rate limiting (moderate)
+rate_limit:
+  enabled: true
+  requests_per_min: 200
+  burst_size: 300
+  cleanup_interval: 2m
+
+# Staging monitoring
+monitoring:
+  enabled: true
+  metrics_port: 9090
+
+# Staging timeouts (slightly relaxed)
+timeouts:
+  default_request_timeout: "45s"
+  chat_completion_timeout: "90s"
+  streaming_timeout: "450s"
+  health_check_timeout: "15s"
+  provider_connect_timeout: "15s"
+  provider_read_timeout: "60s"
+  database_query_timeout: "5s"
+  cache_operation_timeout: "2s"
+
+# Staging router settings
+router:
+  strategy: "health_based"
+  enable_failover: true
+  max_retries: 4
+  circuit_breaker_enabled: true
+  circuit_breaker_threshold: 4
+  circuit_breaker_window: "3m" 
