@@ -1,0 +1,1009 @@
+package monitoring
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	// // "encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	// "os"
+	// "path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
+)
+
+// ===== AUDIT LOG TYPES =====
+
+// AuditLogger provides comprehensive audit logging for the AI Gateway
+type AuditLogger struct {
+	config            *AuditConfig
+	storage           AuditStorage
+	retention         *RetentionManager
+	sanitizer         *DataSanitizer
+	performance       *AuditPerformanceTracker
+	logger            *logrus.Logger
+	mu                sync.RWMutex
+	isRunning         bool
+	ctx               context.Context
+	cancel            context.CancelFunc
+	asyncQueue        chan *AuditEvent
+	workerWg          sync.WaitGroup
+}
+
+// AuditConfig configures the audit logging system
+type AuditConfig struct {
+	// Basic configuration
+	Enabled                    bool                   `json:"enabled"`
+	LogLevel                   string                 `json:"log_level"`
+	OutputPath                 string                 `json:"output_path"`
+	Format                     string                 `json:"format"` // json, structured, text
+	
+	// Request/Response tracking
+	LogRequests                bool                   `json:"log_requests"`
+	LogResponses               bool                   `json:"log_responses"`
+	LogHeaders                 bool                   `json:"log_headers"`
+	LogBody                    bool                   `json:"log_body"`
+	MaxBodySize                int64                  `json:"max_body_size"`
+	SanitizeBody               bool                   `json:"sanitize_body"`
+	
+	// Security and privacy
+	SensitiveHeaders           []string               `json:"sensitive_headers"`
+	PIIPatterns                []string               `json:"pii_patterns"`
+	HashSensitiveData          bool                   `json:"hash_sensitive_data"`
+	EncryptStorage             bool                   `json:"encrypt_storage"`
+	
+	// Performance and storage
+	EnableAsync                bool                   `json:"enable_async"`
+	BufferSize                 int                    `json:"buffer_size"`
+	FlushInterval              time.Duration          `json:"flush_interval"`
+	MaxFileSize                int64                  `json:"max_file_size"`
+	CompressOldLogs            bool                   `json:"compress_old_logs"`
+	
+	// Retention policy
+	RetentionPolicy            *RetentionPolicy       `json:"retention_policy"`
+	
+	// Filtering and sampling
+	IncludePatterns            []string               `json:"include_patterns"`
+	ExcludePatterns            []string               `json:"exclude_patterns"`
+	SampleRate                 float64                `json:"sample_rate"`
+	
+	// Integration
+	ExternalSystems            map[string]interface{} `json:"external_systems"`
+	WebhookEndpoints           []string               `json:"webhook_endpoints"`
+	AlertingEnabled            bool                   `json:"alerting_enabled"`
+}
+
+// AuditEvent represents a comprehensive audit event
+type AuditEvent struct {
+	// Event identification
+	ID                string                 `json:"id"`
+	CorrelationID     string                 `json:"correlation_id"`
+	TraceID           string                 `json:"trace_id,omitempty"`
+	Timestamp         time.Time              `json:"timestamp"`
+	
+	// Event classification
+	Category          AuditCategory          `json:"category"`
+	Type              AuditEventType         `json:"type"`
+	Severity          AuditSeverity          `json:"severity"`
+	Source            string                 `json:"source"`
+	Component         string                 `json:"component"`
+	
+	// Context information
+	UserID            string                 `json:"user_id,omitempty"`
+	SessionID         string                 `json:"session_id,omitempty"`
+	TenantID          string                 `json:"tenant_id,omitempty"`
+	Organization      string                 `json:"organization,omitempty"`
+	
+	// Network information
+	ClientIP          string                 `json:"client_ip,omitempty"`
+	UserAgent         string                 `json:"user_agent,omitempty"`
+	RemoteAddr        string                 `json:"remote_addr,omitempty"`
+	ForwardedFor      string                 `json:"forwarded_for,omitempty"`
+	
+	// Request information
+	Method            string                 `json:"method,omitempty"`
+	URL               string                 `json:"url,omitempty"`
+	Path              string                 `json:"path,omitempty"`
+	QueryParams       map[string]string      `json:"query_params,omitempty"`
+	Headers           map[string]string      `json:"headers,omitempty"`
+	RequestBody       string                 `json:"request_body,omitempty"`
+	RequestSize       int64                  `json:"request_size,omitempty"`
+	ContentType       string                 `json:"content_type,omitempty"`
+	
+	// Response information
+	StatusCode        int                    `json:"status_code,omitempty"`
+	ResponseHeaders   map[string]string      `json:"response_headers,omitempty"`
+	ResponseBody      string                 `json:"response_body,omitempty"`
+	ResponseSize      int64                  `json:"response_size,omitempty"`
+	Duration          time.Duration          `json:"duration,omitempty"`
+	
+	// Business logic
+	Action            string                 `json:"action,omitempty"`
+	Resource          string                 `json:"resource,omitempty"`
+	ResourceID        string                 `json:"resource_id,omitempty"`
+	Outcome           AuditOutcome           `json:"outcome"`
+	ErrorMessage      string                 `json:"error_message,omitempty"`
+	ErrorCode         string                 `json:"error_code,omitempty"`
+	
+	// Policy and security
+	PolicyID          string                 `json:"policy_id,omitempty"`
+	PolicyDecision    string                 `json:"policy_decision,omitempty"`
+	SecurityFlags     []string               `json:"security_flags,omitempty"`
+	RiskScore         float64                `json:"risk_score,omitempty"`
+	
+	// Provider information
+	ProviderName      string                 `json:"provider_name,omitempty"`
+	ProviderModel     string                 `json:"provider_model,omitempty"`
+	TokensUsed        int64                  `json:"tokens_used,omitempty"`
+	Cost              float64                `json:"cost,omitempty"`
+	
+	// Metadata
+	Tags              map[string]string      `json:"tags,omitempty"`
+	Metadata          map[string]interface{} `json:"metadata,omitempty"`
+	CustomFields      map[string]interface{} `json:"custom_fields,omitempty"`
+}
+
+// AuditCategory categorizes audit events
+type AuditCategory string
+
+const (
+	CategoryGateway     AuditCategory = "gateway"
+	CategorySecurity    AuditCategory = "security"
+	CategoryPolicy      AuditCategory = "policy"
+	CategoryProvider    AuditCategory = "provider"
+	CategorySystem      AuditCategory = "system"
+	CategoryUser        AuditCategory = "user"
+	CategoryData        AuditCategory = "data"
+	CategoryPerformance AuditCategory = "performance"
+	CategoryCompliance  AuditCategory = "compliance"
+)
+
+// AuditEventType specifies the specific type of audit event
+type AuditEventType string
+
+const (
+	// Gateway events
+	EventTypeRequest          AuditEventType = "request"
+	EventTypeResponse         AuditEventType = "response"
+	EventTypeProxyStart       AuditEventType = "proxy_start"
+	EventTypeProxyStop        AuditEventType = "proxy_stop"
+	
+	// Security events
+	EventTypeAuthentication   AuditEventType = "authentication"
+	EventTypeAuthorization    AuditEventType = "authorization"
+	EventTypeSecurityViolation AuditEventType = "security_violation"
+	EventTypePIIDetection     AuditEventType = "pii_detection"
+	EventTypeContentBlocked   AuditEventType = "content_blocked"
+	
+	// Policy events
+	EventTypePolicyEvaluation AuditEventType = "policy_evaluation"
+	EventTypePolicyCreated    AuditEventType = "policy_created"
+	EventTypePolicyUpdated    AuditEventType = "policy_updated"
+	EventTypePolicyDeleted    AuditEventType = "policy_deleted"
+	EventTypePolicyConflict   AuditEventType = "policy_conflict"
+	
+	// Provider events
+	EventTypeProviderCall     AuditEventType = "provider_call"
+	EventTypeProviderError    AuditEventType = "provider_error"
+	EventTypeProviderSwitch   AuditEventType = "provider_switch"
+	EventTypeRateLimit        AuditEventType = "rate_limit"
+	
+	// System events
+	EventTypeSystemStart      AuditEventType = "system_start"
+	EventTypeSystemStop       AuditEventType = "system_stop"
+	EventTypeHealthCheck      AuditEventType = "health_check"
+	EventTypeConfiguration    AuditEventType = "configuration"
+	EventTypeError            AuditEventType = "error"
+	
+	// Data events
+	EventTypeDataAccess       AuditEventType = "data_access"
+	EventTypeDataModification AuditEventType = "data_modification"
+	EventTypeDataExport       AuditEventType = "data_export"
+	EventTypeDataRetention    AuditEventType = "data_retention"
+)
+
+// AuditSeverity indicates the severity level of an audit event
+type AuditSeverity string
+
+const (
+	SeverityLow      AuditSeverity = "low"
+	SeverityMedium   AuditSeverity = "medium"
+	SeverityHigh     AuditSeverity = "high"
+	SeverityCritical AuditSeverity = "critical"
+)
+
+// AuditOutcome indicates the outcome of an audited action
+type AuditOutcome string
+
+const (
+	OutcomeSuccess AuditOutcome = "success"
+	OutcomeFailure AuditOutcome = "failure"
+	OutcomePartial AuditOutcome = "partial"
+	OutcomeBlocked AuditOutcome = "blocked"
+	OutcomeDenied  AuditOutcome = "denied"
+)
+
+// RetentionPolicy defines data retention rules
+type RetentionPolicy struct {
+	DefaultRetention    time.Duration            `json:"default_retention"`
+	CategoryRetention   map[AuditCategory]time.Duration `json:"category_retention"`
+	SeverityRetention   map[AuditSeverity]time.Duration `json:"severity_retention"`
+	ArchiveAfter        time.Duration            `json:"archive_after"`
+	DeleteAfter         time.Duration            `json:"delete_after"`
+	CompressAfter       time.Duration            `json:"compress_after"`
+	EnableAutoCleanup   bool                     `json:"enable_auto_cleanup"`
+	CleanupInterval     time.Duration            `json:"cleanup_interval"`
+}
+
+// ===== AUDIT STORAGE INTERFACE =====
+
+// AuditStorage defines the interface for audit log storage
+type AuditStorage interface {
+	Store(event *AuditEvent) error
+	Query(filters *AuditQueryFilters) ([]*AuditEvent, error)
+	Count(filters *AuditQueryFilters) (int64, error)
+	Archive(olderThan time.Time) error
+	Delete(olderThan time.Time) error
+	Close() error
+}
+
+// AuditQueryFilters defines filters for querying audit logs
+type AuditQueryFilters struct {
+	StartTime      *time.Time           `json:"start_time,omitempty"`
+	EndTime        *time.Time           `json:"end_time,omitempty"`
+	Categories     []AuditCategory      `json:"categories,omitempty"`
+	Types          []AuditEventType     `json:"types,omitempty"`
+	Severities     []AuditSeverity      `json:"severities,omitempty"`
+	Outcomes       []AuditOutcome       `json:"outcomes,omitempty"`
+	UserIDs        []string             `json:"user_ids,omitempty"`
+	TenantIDs      []string             `json:"tenant_ids,omitempty"`
+	ClientIPs      []string             `json:"client_ips,omitempty"`
+	Sources        []string             `json:"sources,omitempty"`
+	Components     []string             `json:"components,omitempty"`
+	SearchText     string               `json:"search_text,omitempty"`
+	Limit          int                  `json:"limit,omitempty"`
+	Offset         int                  `json:"offset,omitempty"`
+	SortBy         string               `json:"sort_by,omitempty"`
+	SortOrder      string               `json:"sort_order,omitempty"`
+}
+
+// ===== DATA SANITIZATION =====
+
+// DataSanitizer handles sensitive data sanitization
+type DataSanitizer struct {
+	config        *AuditConfig
+	piiPatterns   []*regexp.Regexp
+	hashSalt      string
+	mu            sync.RWMutex
+}
+
+// NewDataSanitizer creates a new data sanitizer
+func NewDataSanitizer(config *AuditConfig) (*DataSanitizer, error) {
+	ds := &DataSanitizer{
+		config:      config,
+		piiPatterns: make([]*regexp.Regexp, 0),
+		hashSalt:    uuid.New().String(), // Use a random salt for hashing
+	}
+	
+	// Compile PII patterns
+	for _, pattern := range config.PIIPatterns {
+		regex, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid PII pattern %s: %w", pattern, err)
+		}
+		ds.piiPatterns = append(ds.piiPatterns, regex)
+	}
+	
+	return ds, nil
+}
+
+// SanitizeEvent sanitizes an audit event based on configuration
+func (ds *DataSanitizer) SanitizeEvent(event *AuditEvent) *AuditEvent {
+	if !ds.config.SanitizeBody && !ds.config.HashSensitiveData {
+		return event
+	}
+	
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	
+	// Create a copy to avoid modifying the original
+	sanitized := *event
+	
+	// Sanitize headers
+	if len(sanitized.Headers) > 0 {
+		sanitized.Headers = ds.sanitizeHeaders(sanitized.Headers)
+	}
+	if len(sanitized.ResponseHeaders) > 0 {
+		sanitized.ResponseHeaders = ds.sanitizeHeaders(sanitized.ResponseHeaders)
+	}
+	
+	// Sanitize body content
+	if sanitized.RequestBody != "" {
+		sanitized.RequestBody = ds.sanitizeText(sanitized.RequestBody)
+	}
+	if sanitized.ResponseBody != "" {
+		sanitized.ResponseBody = ds.sanitizeText(sanitized.ResponseBody)
+	}
+	
+	// Sanitize user agent and other potential PII fields
+	if sanitized.UserAgent != "" {
+		sanitized.UserAgent = ds.sanitizeText(sanitized.UserAgent)
+	}
+	
+	return &sanitized
+}
+
+// sanitizeHeaders removes or hashes sensitive headers
+func (ds *DataSanitizer) sanitizeHeaders(headers map[string]string) map[string]string {
+	sanitized := make(map[string]string)
+	
+	for key, value := range headers {
+		if ds.isSensitiveHeader(key) {
+			if ds.config.HashSensitiveData {
+				sanitized[key] = ds.hashValue(value)
+			} else {
+				sanitized[key] = "[REDACTED]"
+			}
+		} else {
+			sanitized[key] = value
+		}
+	}
+	
+	return sanitized
+}
+
+// sanitizeText removes or replaces PII in text content
+func (ds *DataSanitizer) sanitizeText(text string) string {
+	result := text
+	
+	for _, pattern := range ds.piiPatterns {
+		if ds.config.HashSensitiveData {
+			result = pattern.ReplaceAllStringFunc(result, func(match string) string {
+				return "[HASH:" + ds.hashValue(match) + "]"
+			})
+		} else {
+			result = pattern.ReplaceAllString(result, "[PII-REDACTED]")
+		}
+	}
+	
+	return result
+}
+
+// isSensitiveHeader checks if a header is considered sensitive
+func (ds *DataSanitizer) isSensitiveHeader(headerName string) bool {
+	headerLower := strings.ToLower(headerName)
+	
+	for _, sensitive := range ds.config.SensitiveHeaders {
+		if strings.ToLower(sensitive) == headerLower {
+			return true
+		}
+	}
+	
+	// Common sensitive headers
+	sensitiveDefaults := []string{
+		"authorization", "cookie", "x-api-key", "x-auth-token",
+		"x-session-id", "x-user-id", "x-tenant-id",
+	}
+	
+	for _, sensitive := range sensitiveDefaults {
+		if headerLower == sensitive {
+			return true
+		}
+	}
+	
+	return false
+}
+
+// hashValue creates a consistent hash of a value
+func (ds *DataSanitizer) hashValue(value string) string {
+	hasher := sha256.New()
+	hasher.Write([]byte(ds.hashSalt + value))
+	return hex.EncodeToString(hasher.Sum(nil))[:16] // Use first 16 chars for readability
+}
+
+// ===== RETENTION MANAGER =====
+
+// RetentionManager handles data retention and archival
+type RetentionManager struct {
+	config   *RetentionPolicy
+	storage  AuditStorage
+	logger   *logrus.Logger
+	ticker   *time.Ticker
+	stopCh   chan struct{}
+	mu       sync.RWMutex
+}
+
+// NewRetentionManager creates a new retention manager
+func NewRetentionManager(config *RetentionPolicy, storage AuditStorage, logger *logrus.Logger) *RetentionManager {
+	return &RetentionManager{
+		config:  config,
+		storage: storage,
+		logger:  logger,
+		stopCh:  make(chan struct{}),
+	}
+}
+
+// Start begins the retention management process
+func (rm *RetentionManager) Start() {
+	if !rm.config.EnableAutoCleanup {
+		return
+	}
+	
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	
+	rm.ticker = time.NewTicker(rm.config.CleanupInterval)
+	
+	go rm.cleanupLoop()
+}
+
+// Stop stops the retention management process
+func (rm *RetentionManager) Stop() {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	
+	if rm.ticker != nil {
+		rm.ticker.Stop()
+		close(rm.stopCh)
+	}
+}
+
+// cleanupLoop performs periodic cleanup operations
+func (rm *RetentionManager) cleanupLoop() {
+	for {
+		select {
+		case <-rm.ticker.C:
+			rm.performCleanup()
+		case <-rm.stopCh:
+			return
+		}
+	}
+}
+
+// performCleanup performs retention policy enforcement
+func (rm *RetentionManager) performCleanup() {
+	now := time.Now()
+	
+	// Archive old logs
+	if rm.config.ArchiveAfter > 0 {
+		archiveTime := now.Add(-rm.config.ArchiveAfter)
+		if err := rm.storage.Archive(archiveTime); err != nil {
+			rm.logger.WithError(err).Error("Failed to archive old audit logs")
+		}
+	}
+	
+	// Delete very old logs
+	if rm.config.DeleteAfter > 0 {
+		deleteTime := now.Add(-rm.config.DeleteAfter)
+		if err := rm.storage.Delete(deleteTime); err != nil {
+			rm.logger.WithError(err).Error("Failed to delete old audit logs")
+		}
+	}
+}
+
+// ===== PERFORMANCE TRACKER =====
+
+// AuditPerformanceTracker tracks audit logging performance
+type AuditPerformanceTracker struct {
+	EventsLogged        int64         `json:"events_logged"`
+	EventsDropped       int64         `json:"events_dropped"`
+	ErrorsCount         int64         `json:"errors_count"`
+	AverageLatency      time.Duration `json:"average_latency"`
+	MaxLatency          time.Duration `json:"max_latency"`
+	MinLatency          time.Duration `json:"min_latency"`
+	StorageUtilization  float64       `json:"storage_utilization"`
+	QueueDepth          int           `json:"queue_depth"`
+	LastEventTime       time.Time     `json:"last_event_time"`
+	StartTime           time.Time     `json:"start_time"`
+	mu                  sync.RWMutex
+}
+
+// NewAuditPerformanceTracker creates a new performance tracker
+func NewAuditPerformanceTracker() *AuditPerformanceTracker {
+	return &AuditPerformanceTracker{
+		StartTime:  time.Now(),
+		MinLatency: time.Hour, // Initialize with a high value
+	}
+}
+
+// RecordEvent records performance metrics for an audit event
+func (apt *AuditPerformanceTracker) RecordEvent(latency time.Duration, success bool) {
+	apt.mu.Lock()
+	defer apt.mu.Unlock()
+	
+	if success {
+		apt.EventsLogged++
+		
+		// Update latency metrics
+		if apt.EventsLogged == 1 {
+			apt.AverageLatency = latency
+			apt.MaxLatency = latency
+			apt.MinLatency = latency
+		} else {
+			apt.AverageLatency = time.Duration((int64(apt.AverageLatency)*(apt.EventsLogged-1) + int64(latency)) / apt.EventsLogged)
+			if latency > apt.MaxLatency {
+				apt.MaxLatency = latency
+			}
+			if latency < apt.MinLatency {
+				apt.MinLatency = latency
+			}
+		}
+	} else {
+		apt.EventsDropped++
+		apt.ErrorsCount++
+	}
+	
+	apt.LastEventTime = time.Now()
+}
+
+// GetMetrics returns current performance metrics
+func (apt *AuditPerformanceTracker) GetMetrics() *AuditPerformanceTracker {
+	apt.mu.RLock()
+	defer apt.mu.RUnlock()
+	
+	// Return a copy
+	metrics := *apt
+	return &metrics
+}
+
+// ===== MAIN AUDIT LOGGER IMPLEMENTATION =====
+
+// NewAuditLogger creates a new comprehensive audit logger
+func NewAuditLogger(config *AuditConfig, storage AuditStorage) (*AuditLogger, error) {
+	if config == nil {
+		return nil, fmt.Errorf("audit config is required")
+	}
+	
+	if storage == nil {
+		return nil, fmt.Errorf("audit storage is required")
+	}
+	
+	// Create logger
+	logger := logrus.New()
+	logger.SetLevel(logrus.InfoLevel)
+	
+	// Create data sanitizer
+	sanitizer, err := NewDataSanitizer(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create data sanitizer: %w", err)
+	}
+	
+	// Create retention manager
+	retention := NewRetentionManager(config.RetentionPolicy, storage, logger)
+	
+	// Create performance tracker
+	performance := NewAuditPerformanceTracker()
+	
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	al := &AuditLogger{
+		config:      config,
+		storage:     storage,
+		retention:   retention,
+		sanitizer:   sanitizer,
+		performance: performance,
+		logger:      logger,
+		ctx:         ctx,
+		cancel:      cancel,
+		asyncQueue:  make(chan *AuditEvent, config.BufferSize),
+	}
+	
+	return al, nil
+}
+
+// Start starts the audit logger
+func (al *AuditLogger) Start() error {
+	al.mu.Lock()
+	defer al.mu.Unlock()
+	
+	if al.isRunning {
+		return fmt.Errorf("audit logger is already running")
+	}
+	
+	al.isRunning = true
+	
+	// Start retention manager
+	al.retention.Start()
+	
+	// Start async workers if enabled
+	if al.config.EnableAsync {
+		for i := 0; i < 5; i++ { // Start 5 workers
+			al.workerWg.Add(1)
+			go al.asyncWorker()
+		}
+	}
+	
+	al.logger.Info("Audit logger started successfully")
+	return nil
+}
+
+// Stop stops the audit logger
+func (al *AuditLogger) Stop() error {
+	al.mu.Lock()
+	defer al.mu.Unlock()
+	
+	if !al.isRunning {
+		return nil
+	}
+	
+	al.isRunning = false
+	al.cancel()
+	
+	// Stop retention manager
+	al.retention.Stop()
+	
+	// Close async queue and wait for workers
+	if al.config.EnableAsync {
+		close(al.asyncQueue)
+		al.workerWg.Wait()
+	}
+	
+	// Close storage
+	if err := al.storage.Close(); err != nil {
+		al.logger.WithError(err).Error("Failed to close audit storage")
+		return err
+	}
+	
+	al.logger.Info("Audit logger stopped successfully")
+	return nil
+}
+
+// LogEvent logs an audit event
+func (al *AuditLogger) LogEvent(event *AuditEvent) error {
+	if !al.config.Enabled {
+		return nil
+	}
+	
+	// Validate event
+	if event == nil {
+		return fmt.Errorf("audit event is required")
+	}
+	
+	// Set defaults
+	if event.ID == "" {
+		event.ID = uuid.New().String()
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+	
+	// Apply filters
+	if !al.shouldLogEvent(event) {
+		return nil
+	}
+	
+	// Sanitize event
+	sanitizedEvent := al.sanitizer.SanitizeEvent(event)
+	
+	// Log asynchronously or synchronously
+	if al.config.EnableAsync {
+		select {
+		case al.asyncQueue <- sanitizedEvent:
+			return nil
+		default:
+			al.performance.RecordEvent(0, false)
+			return fmt.Errorf("audit queue is full")
+		}
+	}
+	
+	return al.storeEvent(sanitizedEvent)
+}
+
+// asyncWorker processes events asynchronously
+func (al *AuditLogger) asyncWorker() {
+	defer al.workerWg.Done()
+	
+	for {
+		select {
+		case event, ok := <-al.asyncQueue:
+			if !ok {
+				return
+			}
+			
+			start := time.Now()
+			err := al.storeEvent(event)
+			latency := time.Since(start)
+			al.performance.RecordEvent(latency, err == nil)
+			
+			if err != nil {
+				al.logger.WithError(err).Error("Failed to store audit event")
+			}
+			
+		case <-al.ctx.Done():
+			return
+		}
+	}
+}
+
+// storeEvent stores an audit event
+func (al *AuditLogger) storeEvent(event *AuditEvent) error {
+	start := time.Now()
+	err := al.storage.Store(event)
+	latency := time.Since(start)
+	
+	if !al.config.EnableAsync {
+		al.performance.RecordEvent(latency, err == nil)
+	}
+	
+	return err
+}
+
+// shouldLogEvent determines if an event should be logged based on filters
+func (al *AuditLogger) shouldLogEvent(event *AuditEvent) bool {
+	// Check include patterns
+	if len(al.config.IncludePatterns) > 0 {
+		included := false
+		for _, pattern := range al.config.IncludePatterns {
+			if matched, _ := regexp.MatchString(pattern, string(event.Type)); matched {
+				included = true
+				break
+			}
+		}
+		if !included {
+			return false
+		}
+	}
+	
+	// Check exclude patterns
+	for _, pattern := range al.config.ExcludePatterns {
+		if matched, _ := regexp.MatchString(pattern, string(event.Type)); matched {
+			return false
+		}
+	}
+	
+	// Check sample rate
+	if al.config.SampleRate < 1.0 {
+		// Simple sampling based on event ID hash
+		hash := sha256.Sum256([]byte(event.ID))
+		hashValue := float64(hash[0]) / 255.0
+		if hashValue > al.config.SampleRate {
+			return false
+		}
+	}
+	
+	return true
+}
+
+// Query queries audit logs
+func (al *AuditLogger) Query(filters *AuditQueryFilters) ([]*AuditEvent, error) {
+	return al.storage.Query(filters)
+}
+
+// Count counts audit logs matching filters
+func (al *AuditLogger) Count(filters *AuditQueryFilters) (int64, error) {
+	return al.storage.Count(filters)
+}
+
+// GetPerformanceMetrics returns performance metrics
+func (al *AuditLogger) GetPerformanceMetrics() *AuditPerformanceTracker {
+	return al.performance.GetMetrics()
+}
+
+// ===== CONVENIENCE METHODS =====
+
+// LogGatewayRequest logs a gateway request
+func (al *AuditLogger) LogGatewayRequest(req *http.Request, correlationID string) error {
+	event := &AuditEvent{
+		CorrelationID: correlationID,
+		Category:      CategoryGateway,
+		Type:          EventTypeRequest,
+		Severity:      SeverityLow,
+		Source:        "gateway",
+		Component:     "proxy",
+		Method:        req.Method,
+		URL:           req.URL.String(),
+		Path:          req.URL.Path,
+		ClientIP:      getClientIP(req),
+		UserAgent:     req.UserAgent(),
+		RemoteAddr:    req.RemoteAddr,
+		Headers:       extractHeaders(req.Header, al.config.LogHeaders),
+		ContentType:   req.Header.Get("Content-Type"),
+		Outcome:       OutcomeSuccess,
+	}
+	
+	// Extract query parameters
+	if len(req.URL.Query()) > 0 {
+		event.QueryParams = make(map[string]string)
+		for key, values := range req.URL.Query() {
+			if len(values) > 0 {
+				event.QueryParams[key] = values[0]
+			}
+		}
+	}
+	
+	// Log request body if configured
+	if al.config.LogBody && req.Body != nil {
+		body, err := io.ReadAll(req.Body)
+		if err == nil && len(body) <= int(al.config.MaxBodySize) {
+			event.RequestBody = string(body)
+			event.RequestSize = int64(len(body))
+		}
+	}
+	
+	return al.LogEvent(event)
+}
+
+// LogGatewayResponse logs a gateway response
+func (al *AuditLogger) LogGatewayResponse(resp *http.Response, duration time.Duration, correlationID string) error {
+	event := &AuditEvent{
+		CorrelationID:   correlationID,
+		Category:        CategoryGateway,
+		Type:            EventTypeResponse,
+		Severity:        al.getSeverityFromStatus(resp.StatusCode),
+		Source:          "gateway",
+		Component:       "proxy",
+		StatusCode:      resp.StatusCode,
+		ResponseHeaders: extractHeaders(resp.Header, al.config.LogHeaders),
+		Duration:        duration,
+		Outcome:         al.getOutcomeFromStatus(resp.StatusCode),
+	}
+	
+	// Log response body if configured
+	if al.config.LogBody && resp.Body != nil {
+		body, err := io.ReadAll(resp.Body)
+		if err == nil && len(body) <= int(al.config.MaxBodySize) {
+			event.ResponseBody = string(body)
+			event.ResponseSize = int64(len(body))
+		}
+	}
+	
+	return al.LogEvent(event)
+}
+
+// LogSecurityViolation logs a security violation
+func (al *AuditLogger) LogSecurityViolation(violation string, req *http.Request, details map[string]interface{}) error {
+	event := &AuditEvent{
+		Category:     CategorySecurity,
+		Type:         EventTypeSecurityViolation,
+		Severity:     SeverityHigh,
+		Source:       "security",
+		Component:    "validator",
+		Action:       violation,
+		ClientIP:     getClientIP(req),
+		UserAgent:    req.UserAgent(),
+		Method:       req.Method,
+		URL:          req.URL.String(),
+		Outcome:      OutcomeBlocked,
+		Metadata:     details,
+		ErrorMessage: violation,
+	}
+	
+	return al.LogEvent(event)
+}
+
+// LogPolicyEvaluation logs a policy evaluation
+func (al *AuditLogger) LogPolicyEvaluation(policyID, decision string, req *http.Request, details map[string]interface{}) error {
+	event := &AuditEvent{
+		Category:       CategoryPolicy,
+		Type:           EventTypePolicyEvaluation,
+		Severity:       SeverityMedium,
+		Source:         "policy",
+		Component:      "engine",
+		PolicyID:       policyID,
+		PolicyDecision: decision,
+		ClientIP:       getClientIP(req),
+		Method:         req.Method,
+		URL:            req.URL.String(),
+		Outcome:        al.getOutcomeFromDecision(decision),
+		Metadata:       details,
+	}
+	
+	return al.LogEvent(event)
+}
+
+// LogProviderCall logs a provider API call
+func (al *AuditLogger) LogProviderCall(provider, model string, tokensUsed int64, cost float64, duration time.Duration, success bool) error {
+	outcome := OutcomeSuccess
+	if !success {
+		outcome = OutcomeFailure
+	}
+	
+	event := &AuditEvent{
+		Category:     CategoryProvider,
+		Type:         EventTypeProviderCall,
+		Severity:     SeverityLow,
+		Source:       "provider",
+		Component:    provider,
+		ProviderName: provider,
+		ProviderModel: model,
+		TokensUsed:   tokensUsed,
+		Cost:         cost,
+		Duration:     duration,
+		Outcome:      outcome,
+	}
+	
+	return al.LogEvent(event)
+}
+
+// ===== HELPER FUNCTIONS =====
+
+// getClientIP extracts the client IP address from the request
+func getClientIP(req *http.Request) string {
+	// Check X-Forwarded-For header
+	forwarded := req.Header.Get("X-Forwarded-For")
+	if forwarded != "" {
+		// Take the first IP in the list
+		ips := strings.Split(forwarded, ",")
+		return strings.TrimSpace(ips[0])
+	}
+	
+	// Check X-Real-IP header
+	realIP := req.Header.Get("X-Real-IP")
+	if realIP != "" {
+		return realIP
+	}
+	
+	// Fall back to RemoteAddr
+	if req.RemoteAddr != "" {
+		// Remove port if present
+		if idx := strings.LastIndex(req.RemoteAddr, ":"); idx != -1 {
+			return req.RemoteAddr[:idx]
+		}
+		return req.RemoteAddr
+	}
+	
+	return "unknown"
+}
+
+// extractHeaders extracts headers from HTTP headers
+func extractHeaders(headers http.Header, logHeaders bool) map[string]string {
+	if !logHeaders {
+		return nil
+	}
+	
+	result := make(map[string]string)
+	for key, values := range headers {
+		if len(values) > 0 {
+			result[key] = values[0]
+		}
+	}
+	
+	return result
+}
+
+// getSeverityFromStatus determines severity based on HTTP status code
+func (al *AuditLogger) getSeverityFromStatus(statusCode int) AuditSeverity {
+	switch {
+	case statusCode >= 500:
+		return SeverityCritical
+	case statusCode >= 400:
+		return SeverityHigh
+	case statusCode >= 300:
+		return SeverityMedium
+	default:
+		return SeverityLow
+	}
+}
+
+// getOutcomeFromStatus determines outcome based on HTTP status code
+func (al *AuditLogger) getOutcomeFromStatus(statusCode int) AuditOutcome {
+	switch {
+	case statusCode >= 200 && statusCode < 300:
+		return OutcomeSuccess
+	case statusCode >= 300 && statusCode < 400:
+		return OutcomePartial
+	default:
+		return OutcomeFailure
+	}
+}
+
+// getOutcomeFromDecision determines outcome based on policy decision
+func (al *AuditLogger) getOutcomeFromDecision(decision string) AuditOutcome {
+	switch strings.ToLower(decision) {
+	case "allow", "permitted":
+		return OutcomeSuccess
+	case "deny", "blocked":
+		return OutcomeDenied
+	case "filtered", "modified":
+		return OutcomePartial
+	default:
+		return OutcomeFailure
+	}
+} 
