@@ -1,0 +1,157 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: ai-gateway-postgres
+    environment:
+      POSTGRES_DB: ai_gateway
+      POSTGRES_USER: gateway_user
+      POSTGRES_PASSWORD: gateway_password
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - ai-gateway-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway_user -d ai_gateway"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: ai-gateway-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ai-gateway-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    command: redis-server --appendonly yes
+
+  # Go Backend (Development with hot reload)
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      target: development
+    container_name: ai-gateway-backend
+    ports:
+      - "8080:8080"  # API server
+      - "9090:9090"  # Metrics server
+    environment:
+      - GATEWAY_ENVIRONMENT=development
+      - GATEWAY_LOG_LEVEL=debug
+      - GATEWAY_DATABASE_HOST=postgres
+      - GATEWAY_DATABASE_USERNAME=gateway_user
+      - GATEWAY_DATABASE_PASSWORD=gateway_password
+      - GATEWAY_DATABASE_DATABASE=ai_gateway
+      - GATEWAY_REDIS_HOST=redis
+      - GATEWAY_SECURITY_JWT_SECRET=development-jwt-secret-change-in-production
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - .:/app
+      - go_mod_cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai-gateway-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Next.js Frontend (Development with hot reload)
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+      target: development
+    container_name: ai-gateway-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+    depends_on:
+      - gateway
+    networks:
+      - ai-gateway-network
+    restart: unless-stopped
+
+  # Prometheus (Optional for development)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ai-gateway-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - ai-gateway-network
+    profiles:
+      - monitoring
+
+  # Grafana (Optional for development)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ai-gateway-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - ai-gateway-network
+    profiles:
+      - monitoring
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  go_mod_cache:
+    driver: local
+  web_node_modules:
+    driver: local
+
+networks:
+  ai-gateway-network:
+    driver: bridge 
